@@ -1,0 +1,20 @@
+# Telegram Bot
+python-telegram-bot[job-queue]==20.7
+
+# AI Providers
+google-generativeai>=0.7.0
+openai>=1.30.0
+
+# Google Sheets
+gspread>=6.1.0
+google-auth>=2.29.0
+
+# PDF parsing
+pymupdf>=1.24.0
+
+# Chart generation
+matplotlib>=3.8.0
+pillow>=10.3.0
+
+# Config & utilities
+python-dotenv>=1.0.1
