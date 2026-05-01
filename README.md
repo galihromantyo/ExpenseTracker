@@ -298,14 +298,14 @@ Contoh output laporan:
 📊 Laporan April 2026
 ──────────────────────────────────
 💰 Budget Total  : £ 3,000.00
-📤 Total Keluar  : £ 2,340.00  (78%)
-💵 Sisa Budget   : £   660.00  (22%)
+📤 Total Keluar  : £ 2,340.00 (78%)
+💵 Sisa Budget   : £   660.00
 
 📂 Per Kategori:
 🏠 Rent          : £ 1,800.00
-🍽️ Food & Dining : £   280.00  (sisa £ 20.00)
+🍽️ Food & Dining : £   280.00 → sisa £ 20.00
 🚇 Transport     : £    95.00
-🛍️ Shopping      : £   165.00  ⚠️ lewat budget
+🛍️ Shopping      : £   165.00 ⚠️ +£ 15.00
 ──────────────────────────────────
 💱 Rate: 1 GBP = Rp 20.250
 📌 Rate diambil: 30 Apr 2026 via frankfurter.app
@@ -423,10 +423,11 @@ pip install -r requirements.txt
 2. Buka [Google Cloud Console](https://console.cloud.google.com)
 3. Buat project → aktifkan **Google Sheets API** dan **Google Drive API**
 4. **IAM & Admin → Service Accounts → Create Service Account**
-5. Download JSON key dari service account yang dibuat
+5. Download JSON key dari service account yang dibuat → simpan sebagai `service-account.json` di folder project
 6. Share spreadsheet ke email service account (`xxx@project.iam.gserviceaccount.com`) dengan akses **Editor**
 
 > Sheet `Expenses` dan `Budget` beserta header-nya dibuat otomatis oleh bot saat pertama dijalankan.
+> File `service-account.json` sudah di-exclude dari git tracking via `.gitignore`.
 
 ### 4. Telegram Bot
 
@@ -459,8 +460,8 @@ OPENAI_API_KEY=                        # isi jika AI_PROVIDER=openai
 # Google Sheets
 GOOGLE_SHEETS_ID=your_spreadsheet_id
 
-# Opsi A — path ke file JSON (untuk lokal):
-GOOGLE_SERVICE_ACCOUNT_JSON=path/to/service-account.json
+# Opsi A — simpan JSON ke file (direkomendasikan untuk lokal):
+GOOGLE_SERVICE_ACCOUNT_JSON=service-account.json
 # Opsi B — paste isi JSON sebagai satu baris (untuk cloud deploy):
 # GOOGLE_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"..."}
 
