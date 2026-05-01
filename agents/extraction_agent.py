@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import date
 
@@ -68,13 +69,19 @@ def _parse(raw: str) -> dict:
 
 # ── Gemini helpers ──────────────────────────────────────────────────────────
 
+_GEMINI_TIMEOUT = 30  # seconds
+
+
 async def _gemini_text(prompt: str, user_text: str) -> dict:
     import google.generativeai as genai
     genai.configure(api_key=config.gemini_api_key)
     model = genai.GenerativeModel(config.gemini_model)
-    resp = await model.generate_content_async(
-        f"{prompt}\n\nUser input:\n{user_text}",
-        generation_config=genai.GenerationConfig(response_mime_type="application/json"),
+    resp = await asyncio.wait_for(
+        model.generate_content_async(
+            f"{prompt}\n\nUser input:\n{user_text}",
+            generation_config=genai.GenerationConfig(response_mime_type="application/json"),
+        ),
+        timeout=_GEMINI_TIMEOUT,
     )
     return _parse(resp.text)
 
@@ -83,9 +90,12 @@ async def _gemini_image(prompt: str, image_bytes: bytes, mime_type: str) -> dict
     import google.generativeai as genai
     genai.configure(api_key=config.gemini_api_key)
     model = genai.GenerativeModel(config.gemini_model)
-    resp = await model.generate_content_async(
-        [prompt + "\n\nExtract from this receipt image:", {"mime_type": mime_type, "data": image_bytes}],
-        generation_config=genai.GenerationConfig(response_mime_type="application/json"),
+    resp = await asyncio.wait_for(
+        model.generate_content_async(
+            [prompt + "\n\nExtract from this receipt image:", {"mime_type": mime_type, "data": image_bytes}],
+            generation_config=genai.GenerationConfig(response_mime_type="application/json"),
+        ),
+        timeout=_GEMINI_TIMEOUT,
     )
     return _parse(resp.text)
 
@@ -94,9 +104,12 @@ async def _gemini_audio(prompt: str, audio_bytes: bytes, mime_type: str) -> dict
     import google.generativeai as genai
     genai.configure(api_key=config.gemini_api_key)
     model = genai.GenerativeModel(config.gemini_model)
-    resp = await model.generate_content_async(
-        [prompt + "\n\nExtract expense from this voice note:", {"mime_type": mime_type, "data": audio_bytes}],
-        generation_config=genai.GenerationConfig(response_mime_type="application/json"),
+    resp = await asyncio.wait_for(
+        model.generate_content_async(
+            [prompt + "\n\nExtract expense from this voice note:", {"mime_type": mime_type, "data": audio_bytes}],
+            generation_config=genai.GenerationConfig(response_mime_type="application/json"),
+        ),
+        timeout=_GEMINI_TIMEOUT,
     )
     return _parse(resp.text)
 

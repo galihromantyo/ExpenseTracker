@@ -38,21 +38,21 @@ def format_report_single(
     """
     lines: list[str] = [f"📊 *Laporan {month_display}*"]
     if converted:
-        lines.append(f"_\\(semua dikonversi ke {display_currency}\\)_")
+        lines.append(f"_(semua dikonversi ke {display_currency})_")
     lines.append("─" * 30)
 
     if total_budget is not None:
         pct = (total_spent / total_budget * 100) if total_budget > 0 else 0
         sisa = total_budget - total_spent
         lines.append(f"💰 Budget Total  : *{format_amount(total_budget, display_currency)}*")
-        lines.append(f"📤 Total Keluar  : {format_amount(total_spent, display_currency)} \\({pct:.0f}%\\)")
+        lines.append(f"📤 Total Keluar  : {format_amount(total_spent, display_currency)} ({pct:.0f}%)")
         sisa_label = f"💵 Sisa Budget   : {format_amount(max(sisa, 0), display_currency)}"
         if sisa < 0:
             sisa_label += f" ⚠️ OVER {format_amount(abs(sisa), display_currency)}"
         lines.append(sisa_label)
     else:
         lines.append(f"📤 Total Keluar  : *{format_amount(total_spent, display_currency)}*")
-        lines.append("_\\(budget belum diset — gunakan /budget untuk mengatur\\)_")
+        lines.append("_(budget belum diset — gunakan /budget untuk mengatur)_")
 
     if by_category:
         lines.append("\n📂 *Per Kategori:*")
@@ -66,7 +66,7 @@ def format_report_single(
             if data.get("budget") is not None:
                 sisa_cat = data["budget"] - data["spent"]
                 if sisa_cat < 0:
-                    line += f" ⚠️ \\+{format_amount(abs(sisa_cat), display_currency)}"
+                    line += f" ⚠️ +{format_amount(abs(sisa_cat), display_currency)}"
                     over_cats.append(cat)
                 else:
                     line += f" → sisa {format_amount(sisa_cat, display_currency)}"
@@ -92,7 +92,7 @@ def format_report_multi(
     Format report for multi-currency without conversion.
     sections: {currency: {"total_spent": float, "by_category": {...}}}
     """
-    lines = [f"📊 *Laporan {month_display}*", "_\\(multi\\-currency, tidak dikonversi\\)_", "─" * 30]
+    lines = [f"📊 *Laporan {month_display}*", "_(multi-currency, tidak dikonversi)_", "─" * 30]
     for currency, data in sections.items():
         lines.append(f"\n*── {currency} ──*")
         lines.append(f"📤 Total Keluar : *{format_amount(data['total_spent'], currency)}*")

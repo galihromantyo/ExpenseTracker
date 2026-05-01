@@ -2,6 +2,9 @@ import asyncio
 import json
 import os
 from datetime import datetime, timezone
+from pathlib import Path
+
+_PROJECT_DIR = Path(__file__).parent.parent
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -16,12 +19,15 @@ _SCOPES = [
 
 
 def _build_creds() -> Credentials:
-    sa = config.google_service_account_json
-    # Support inline JSON content (useful for cloud deployments)
-    if sa.strip().startswith("{"):
+    sa = config.google_service_account_json.strip()
+    if sa.startswith("{"):
         info = json.loads(sa)
         return Credentials.from_service_account_info(info, scopes=_SCOPES)
-    return Credentials.from_service_account_file(sa, scopes=_SCOPES)
+    # Resolve relative path from project root
+    path = Path(sa)
+    if not path.is_absolute():
+        path = _PROJECT_DIR / path
+    return Credentials.from_service_account_file(str(path), scopes=_SCOPES)
 
 
 def _get_worksheet(sheet_name: str) -> gspread.Worksheet:
