@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -14,8 +14,18 @@ class Config:
     gemini_model: str
     openai_api_key: str
     google_sheets_id: str
+    google_sheets_id_test: str
     google_service_account_json: str
     default_currency: str
+    superuser_chat_ids: list[int]
+    mode: str  # "prod" or "test"
+
+    @property
+    def active_sheets_id(self) -> str:
+        """Return test or prod spreadsheet ID based on MODE."""
+        if self.mode == "test" and self.google_sheets_id_test:
+            return self.google_sheets_id_test
+        return self.google_sheets_id
 
 
 def _load() -> Config:
@@ -40,6 +50,8 @@ def _load() -> Config:
     if not sheets_id:
         raise ValueError("GOOGLE_SHEETS_ID is required")
 
+    sheets_id_test = os.getenv("GOOGLE_SHEETS_ID_TEST", "")
+
     sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
     if not sa_json:
         raise ValueError("GOOGLE_SERVICE_ACCOUNT_JSON is required")
@@ -48,6 +60,20 @@ def _load() -> Config:
     if currency not in ("IDR", "USD", "EUR", "GBP"):
         raise ValueError("DEFAULT_CURRENCY must be one of: IDR, USD, EUR, GBP")
 
+    raw_superusers = os.getenv("SUPERUSER_CHAT_IDS", "")
+    superuser_ids: list[int] = []
+    for part in raw_superusers.split(","):
+        part = part.strip()
+        if part:
+            try:
+                superuser_ids.append(int(part))
+            except ValueError:
+                pass
+
+    mode = os.getenv("MODE", "prod").lower()
+    if mode not in ("prod", "test"):
+        mode = "prod"
+
     return Config(
         telegram_bot_token=token,
         ai_provider=provider,
@@ -55,8 +81,11 @@ def _load() -> Config:
         gemini_model=gemini_model,
         openai_api_key=openai_key,
         google_sheets_id=sheets_id,
+        google_sheets_id_test=sheets_id_test,
         google_service_account_json=sa_json,
         default_currency=currency,
+        superuser_chat_ids=superuser_ids,
+        mode=mode,
     )
 
 

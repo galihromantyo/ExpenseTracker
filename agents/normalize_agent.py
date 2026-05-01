@@ -54,11 +54,50 @@ def normalize_date(raw: str | None) -> str:
         return today.isoformat()
     if s in ("yesterday", "kemarin"):
         return (today - timedelta(days=1)).isoformat()
-    # Already ISO
+    raw = raw.strip()
+    # Already ISO YYYY-MM-DD
     if re.match(r"^\d{4}-\d{2}-\d{2}$", raw):
         return raw
-    # Fallback: return as-is (AI already handled most formats)
-    return raw
+    # DD/MM/YY or DD/MM/YYYY (UK/European receipt format)
+    m = re.match(r"^(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{2,4})$", raw)
+    if m:
+        d_str, mo_str, y_str = m.groups()
+        y = int(y_str) if len(y_str) == 4 else 2000 + int(y_str)
+        try:
+            return date(y, int(mo_str), int(d_str)).isoformat()
+        except ValueError:
+            try:
+                return date(y, int(d_str), int(mo_str)).isoformat()
+            except ValueError:
+                pass
+    # "10 April 2026" / "April 10, 2026"
+    months = {
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "may": 5, "june": 6, "july": 7, "august": 8,
+        "september": 9, "october": 10, "november": 11, "december": 12,
+        "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7,
+        "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+    }
+    m2 = re.match(r"^(\d{1,2})\s+(\w+)\s+(\d{4})$", raw)
+    if m2:
+        d_str, mon_name, y_str = m2.groups()
+        mo = months.get(mon_name.lower())
+        if mo:
+            try:
+                return date(int(y_str), mo, int(d_str)).isoformat()
+            except ValueError:
+                pass
+    m3 = re.match(r"^(\w+)\s+(\d{1,2}),?\s+(\d{4})$", raw)
+    if m3:
+        mon_name, d_str, y_str = m3.groups()
+        mo = months.get(mon_name.lower())
+        if mo:
+            try:
+                return date(int(y_str), mo, int(d_str)).isoformat()
+            except ValueError:
+                pass
+    # Fallback: return today (avoid storing unparseable dates)
+    return today.isoformat()
 
 
 def normalize_category(raw: str | None) -> str:

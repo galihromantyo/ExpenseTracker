@@ -1,7 +1,7 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from agents import sheets_agent, currency_agent, report_agent, chart_agent
+from agents import sheets_agent, currency_agent, report_agent, chart_agent, user_agent
 from utils.date_parser import format_month_display, month_to_str
 from utils.formatter import format_expense_confirmation
 from utils.currency import format_amount
@@ -25,14 +25,14 @@ async def _run_report_for_month(
     month_str: str,
     month_display: str,
 ) -> None:
-    """Fetch expenses + budget for month, then decide next step."""
+    chat_id = update.effective_user.id
     msg = update.message or update.callback_query.message
 
     await msg.reply_text(f"⏳ Mengambil data {month_display}...")
 
     try:
-        expenses = await sheets_agent.get_expenses_for_month(month_str)
-        budget_entries = await sheets_agent.get_budget(month_str)
+        expenses = await sheets_agent.get_expenses_for_month(chat_id, month_str)
+        budget_entries = await sheets_agent.get_budget(chat_id, month_str)
     except Exception as e:
         await msg.reply_text(f"❌ Gagal membaca Google Sheets: {e}")
         clear_state(context.user_data)
@@ -54,9 +54,10 @@ async def _run_report_for_month(
     })
 
     if rd["is_multi_currency"]:
+        user_currency = await user_agent.get_user_currency(chat_id)
         currencies_str = " & ".join(rd["currencies"])
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"🔄 Konversi ke {config.default_currency}",
+            [InlineKeyboardButton(f"🔄 Konversi ke {user_currency}",
                                   callback_data="report:currency:convert")],
             [InlineKeyboardButton(f"📋 Pisah per mata uang ({currencies_str})",
                                   callback_data="report:currency:separate")],
@@ -69,8 +70,7 @@ async def _run_report_for_month(
             reply_markup=kb,
         )
     else:
-        # Single currency — generate report directly
-        display_currency = rd["currencies"][0] if rd["currencies"] else config.default_currency
+        display_currency = rd["currencies"][0] if rd["currencies"] else await user_agent.get_user_currency(chat_id)
         await _generate_and_send_report(update, context, display_currency, convert=False)
 
 
@@ -81,6 +81,7 @@ async def _generate_and_send_report(
     convert: bool,
     separate: bool = False,
 ) -> None:
+    chat_id = update.effective_user.id
     _, _, data = get_state(context.user_data)
     msg = update.message or update.callback_query.message
     expenses = data.get("expenses", [])
@@ -110,7 +111,6 @@ async def _generate_and_send_report(
                 rd, month_display, display_currency, converted_expenses, rate_info
             )
 
-    # Store for chart generation
     update_data(context.user_data,
                 converted_expenses=converted_expenses,
                 display_currency=display_currency,
@@ -118,7 +118,6 @@ async def _generate_and_send_report(
 
     await msg.reply_text(text, parse_mode="Markdown")
 
-    # Ask about chart
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("📊 Bar chart", callback_data="report:chart:bar"),
         InlineKeyboardButton("🥧 Pie chart", callback_data="report:chart:pie"),
@@ -150,10 +149,11 @@ async def _start_budget_type_step(
     month_str: str,
     month_display: str,
 ) -> None:
+    chat_id = update.effective_user.id
     msg = update.message or update.callback_query.message
 
     try:
-        existing = await sheets_agent.get_budget(month_str)
+        existing = await sheets_agent.get_budget(chat_id, month_str)
     except Exception as e:
         await msg.reply_text(f"❌ Gagal membaca Google Sheets: {e}")
         clear_state(context.user_data)
@@ -196,7 +196,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     data_str = query.data or ""
 
-    # ── Expense confirmation ──────────────────────────────────────────────────
     if data_str == "expense:confirm":
         await _cb_expense_confirm(update, context)
 
@@ -211,25 +210,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         field = data_str.split(":", 2)[2]
         await _cb_expense_edit_field(update, context, field)
 
-    # ── Report flow ───────────────────────────────────────────────────────────
     elif data_str.startswith("report:month:"):
         await _cb_report_month(update, context, data_str)
 
     elif data_str == "report:currency:convert":
+        chat_id = update.effective_user.id
+        user_currency = await user_agent.get_user_currency(chat_id)
         await query.edit_message_text("⏳ Mengambil kurs...")
-        _, _, d = get_state(context.user_data)
-        await _generate_and_send_report(update, context, config.default_currency, convert=True)
+        await _generate_and_send_report(update, context, user_currency, convert=True)
 
     elif data_str == "report:currency:separate":
         await query.edit_message_text("⏳ Menyusun laporan...")
         _, _, d = get_state(context.user_data)
-        await _generate_and_send_report(update, context, config.default_currency, convert=False, separate=True)
+        chat_id = update.effective_user.id
+        user_currency = await user_agent.get_user_currency(chat_id)
+        await _generate_and_send_report(update, context, user_currency, convert=False, separate=True)
 
     elif data_str.startswith("report:chart:"):
         chart_choice = data_str.split(":", 2)[2]
         await _cb_report_chart(update, context, chart_choice)
 
-    # ── Budget flow ───────────────────────────────────────────────────────────
     elif data_str.startswith("budget:month:"):
         await _cb_budget_month(update, context, data_str)
 
@@ -271,7 +271,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         clear_state(context.user_data)
         await query.edit_message_text("❌ Pengaturan budget dibatalkan.")
 
-    # ── Edit flow ─────────────────────────────────────────────────────────────
     elif data_str.startswith("edit:select:"):
         row_num = int(data_str.split(":", 2)[2])
         await _cb_edit_select(update, context, row_num)
@@ -284,7 +283,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         clear_state(context.user_data)
         await query.edit_message_text("❌ Edit dibatalkan.")
 
-    # ── Delete flow ───────────────────────────────────────────────────────────
     elif data_str.startswith("delete:select:"):
         row_num = int(data_str.split(":", 2)[2])
         await _cb_delete_select(update, context, row_num)
@@ -297,28 +295,30 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         clear_state(context.user_data)
         await query.edit_message_text("❌ Penghapusan dibatalkan.")
 
-    # ── Export flow ───────────────────────────────────────────────────────────
     elif data_str.startswith("export:range:"):
         await _cb_export_range(update, context, data_str)
 
-    # ── Set currency ──────────────────────────────────────────────────────────
     elif data_str.startswith("currency:set:"):
         code = data_str.split(":", 2)[2]
-        config.default_currency = code
-        await query.edit_message_text(f"✅ Mata uang default diubah ke *{code}*.", parse_mode="Markdown")
+        chat_id = update.effective_user.id
+        await user_agent.set_currency(chat_id, code)
+        await query.edit_message_text(
+            f"✅ Mata uang default diubah ke *{code}* dan disimpan.", parse_mode="Markdown"
+        )
 
 
 # ── Expense confirm ──────────────────────────────────────────────────────────
 
 async def _cb_expense_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    chat_id = update.effective_user.id
     _, _, data = get_state(context.user_data)
     expense = data.get("expense")
     if not expense:
         await query.edit_message_text("⚠️ Data transaksi tidak ditemukan. Coba input ulang.")
         return
     try:
-        await sheets_agent.append_expense(expense)
+        await sheets_agent.append_expense(chat_id, expense)
     except Exception as e:
         await query.edit_message_text(f"❌ Gagal menyimpan ke Google Sheets: {e}")
         return
@@ -343,7 +343,6 @@ async def _cb_expense_edit_menu(update: Update, context: ContextTypes.DEFAULT_TY
 async def _cb_expense_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE, field: str) -> None:
     query = update.callback_query
     _, _, data = get_state(context.user_data)
-    expense = data.get("expense", {})
     update_data(context.user_data, edit_field=field)
     set_state(context.user_data, FLOW_INPUT, STEP_EDITING_VALUE, {**data, "edit_field": field})
 
@@ -392,7 +391,6 @@ async def _cb_report_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, c
     await query.edit_message_text("⏳ Membuat chart...")
 
     if separate:
-        # Build chart from all expenses regardless of currency — group by category
         by_cat: dict[str, float] = {}
         for exp in converted_expenses:
             cat = exp.get("category", "Other")
@@ -427,36 +425,30 @@ async def _cb_budget_month(update: Update, context: ContextTypes.DEFAULT_TYPE, d
 
 async def _cb_budget_type_total(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    chat_id = update.effective_user.id
     _, _, data = get_state(context.user_data)
-    month_str = data.get("month", "")
     month_display = data.get("month_display", "")
-
-    # Ask for currency
-    cur = config.default_currency
-    set_state(context.user_data, FLOW_BUDGET, STEP_ASK_BUDGET_TOTAL, {
-        **data,
-        "currency": cur,
-    })
+    cur = await user_agent.get_user_currency(chat_id)
+    set_state(context.user_data, FLOW_BUDGET, STEP_ASK_BUDGET_TOTAL, {**data, "currency": cur})
     await query.edit_message_text(
-        f"💰 Budget total untuk *{month_display}* \\({cur}\\)?\n"
+        f"💰 Budget total untuk *{month_display}* ({cur})?\n"
         "_Ketik nominalnya, contoh: `5jt` atau `5000000`_",
-        parse_mode="MarkdownV2",
+        parse_mode="Markdown",
     )
 
 
 async def _cb_budget_type_per_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    chat_id = update.effective_user.id
     _, _, data = get_state(context.user_data)
     month_str = data.get("month", "")
 
-    # Get categories with existing transactions OR show all
     try:
-        existing_expenses = await sheets_agent.get_expenses_for_month(month_str)
+        existing_expenses = await sheets_agent.get_expenses_for_month(chat_id, month_str)
         active_cats = list({e.get("category", "Other") for e in existing_expenses})
     except Exception:
         active_cats = []
 
-    # Show all 15 categories + existing ones
     all_cats = list(dict.fromkeys(active_cats + CATEGORIES))
 
     buttons = []
@@ -466,10 +458,11 @@ async def _cb_budget_type_per_category(update: Update, context: ContextTypes.DEF
     buttons.append([InlineKeyboardButton("✅ Selesai (simpan yang sudah diisi)", callback_data="budget:done")])
     buttons.append([InlineKeyboardButton("❌ Batal", callback_data="budget:cancel")])
 
+    cur = await user_agent.get_user_currency(chat_id)
     set_state(context.user_data, FLOW_BUDGET, STEP_ASK_BUDGET_CATEGORY, {
         **data,
         "budget_data": [],
-        "currency": config.default_currency,
+        "currency": cur,
         "all_categories": all_cats,
     })
     await query.edit_message_text(
@@ -482,9 +475,9 @@ async def _cb_budget_type_per_category(update: Update, context: ContextTypes.DEF
 
 async def _cb_budget_cat_select(update: Update, context: ContextTypes.DEFAULT_TYPE, category: str) -> None:
     query = update.callback_query
+    chat_id = update.effective_user.id
     _, _, data = get_state(context.user_data)
-    currency = data.get("currency", config.default_currency)
-    # Start asking for this category's budget via text
+    currency = data.get("currency", await user_agent.get_user_currency(chat_id))
     set_state(context.user_data, FLOW_BUDGET, STEP_ASK_BUDGET_CATEGORY, {
         **data,
         "current_category": category,
@@ -499,11 +492,12 @@ async def _cb_budget_cat_select(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def _cb_budget_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    chat_id = update.effective_user.id
     _, _, data = get_state(context.user_data)
     budget_data: list[dict] = data.get("budget_data", [])
     month_str = data.get("month", "")
     month_display = data.get("month_display", "")
-    currency = data.get("currency", config.default_currency)
+    currency = data.get("currency", await user_agent.get_user_currency(chat_id))
 
     if not budget_data:
         await query.edit_message_text("ℹ️ Tidak ada budget yang diisi.")
@@ -511,7 +505,7 @@ async def _cb_budget_done(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     try:
-        await sheets_agent.set_budget(month_str, budget_data)
+        await sheets_agent.set_budget(chat_id, month_str, budget_data)
     except Exception as e:
         await query.edit_message_text(f"❌ Gagal menyimpan budget: {e}")
         return
@@ -528,11 +522,12 @@ async def _cb_budget_done(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def _cb_budget_manage_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    chat_id = update.effective_user.id
     _, _, data = get_state(context.user_data)
     month_str = data.get("month", "")
     month_display = data.get("month_display", "")
     try:
-        await sheets_agent.delete_budget(month_str)
+        await sheets_agent.delete_budget(chat_id, month_str)
     except Exception as e:
         await query.edit_message_text(f"❌ Gagal menghapus budget: {e}")
         return
@@ -589,7 +584,6 @@ async def _cb_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
 async def _apply_edit_value(
     update: Update, context: ContextTypes.DEFAULT_TYPE, new_value: str
 ) -> None:
-    """Called from input_handler when edit flow is in STEP_ENTER_VALUE."""
     _, _, data = get_state(context.user_data)
     expense = dict(data.get("expense", {}))
     field = data.get("edit_field", "")
@@ -645,7 +639,6 @@ async def _cb_delete_select(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
     set_state(context.user_data, FLOW_DELETE, STEP_CONFIRM_DELETE, {"expense": expense})
 
-    from utils.currency import format_amount
     amount_str = format_amount(float(expense.get("amount", 0)), expense.get("currency", "IDR"))
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("🗑️ Ya, hapus", callback_data=f"delete:confirm:{row_num}"),
@@ -674,7 +667,7 @@ async def _cb_delete_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
 async def _cb_export_range(update: Update, context: ContextTypes.DEFAULT_TYPE, data_str: str) -> None:
     query = update.callback_query
-    parts = data_str.split(":", 3)  # export:range:start:end or export:range:custom
+    parts = data_str.split(":", 3)
     if parts[2] == "custom":
         from utils.state import FLOW_EXPORT, STEP_ASK_EXPORT_RANGE
         set_state(context.user_data, FLOW_EXPORT, STEP_ASK_EXPORT_RANGE, {})

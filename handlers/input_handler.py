@@ -3,7 +3,7 @@ import io
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from agents import extraction_agent, normalize_agent, sheets_agent
+from agents import extraction_agent, normalize_agent, sheets_agent, user_agent
 from utils.currency import detect_currency
 from utils.date_parser import parse_report_month, format_month_display, month_to_str
 from utils.formatter import format_expense_confirmation
@@ -33,7 +33,9 @@ async def _process_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
                           audio_bytes: bytes | None = None,
                           audio_mime: str = "audio/ogg",
                           input_type: str = "text") -> None:
-    """Extract, normalise, and show confirmation for any input type."""
+    chat_id = update.effective_user.id
+    user_currency = await user_agent.get_user_currency(chat_id)
+
     await update.message.reply_text("⏳ Sedang memproses input kamu...")
 
     try:
@@ -56,15 +58,14 @@ async def _process_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
         )
         return
 
-    # Handle ambiguous currency
     if raw.get("currency") is None:
         if text:
             detected = detect_currency(text)
-            raw["currency"] = detected or config.default_currency
+            raw["currency"] = detected or user_currency
         else:
-            raw["currency"] = config.default_currency
+            raw["currency"] = user_currency
 
-    expense = normalize_agent.normalize_expense(raw, config.default_currency)
+    expense = normalize_agent.normalize_expense(raw, user_currency)
     expense["input_type"] = input_type
 
     set_state(context.user_data, FLOW_INPUT, STEP_CONFIRMING, {"expense": expense})
@@ -81,8 +82,7 @@ async def _process_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     flow, step, data = get_state(context.user_data)
     msg = update.message
-
-    # ── Route based on active flow ──────────────────────────────────────────
+    chat_id = update.effective_user.id
 
     if flow == FLOW_INPUT and step == STEP_EDITING_VALUE:
         field = data.get("edit_field")
@@ -150,9 +150,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         month_str = data.get("month", "")
         month_display = data.get("month_display", "")
-        currency = data.get("currency", config.default_currency)
+        currency = data.get("currency", await user_agent.get_user_currency(chat_id))
         entries = [{"currency": currency, "budget_type": "total", "category": "", "amount": amount}]
-        await sheets_agent.set_budget(month_str, entries)
+        await sheets_agent.set_budget(chat_id, month_str, entries)
         clear_state(context.user_data)
         from utils.currency import format_amount
         await msg.reply_text(
@@ -169,7 +169,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         amount = normalize_amount(msg.text)
         category_queue: list[str] = data.get("category_queue", [])
         budget_data: list[dict] = data.get("budget_data", [])
-        currency = data.get("currency", config.default_currency)
+        currency = data.get("currency", await user_agent.get_user_currency(chat_id))
         current_cat = data.get("current_category", "")
 
         if amount is None:
@@ -195,11 +195,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 parse_mode="Markdown",
             )
         else:
-            # All categories done — save
             month_str = data.get("month", "")
             month_display = data.get("month_display", "")
             if budget_data:
-                await sheets_agent.set_budget(month_str, budget_data)
+                await sheets_agent.set_budget(chat_id, month_str, budget_data)
                 total = sum(e["amount"] for e in budget_data)
                 from utils.currency import format_amount
                 lines = [f"✅ Budget *{month_display}* per kategori berhasil disimpan!\n"]
@@ -222,12 +221,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await _apply_edit_value(update, context, msg.text.strip())
         return
 
-    # ── Export: ask range as text ────────────────────────────────────────────
     from utils.state import FLOW_EXPORT
     if flow == FLOW_EXPORT and step == STEP_ASK_EXPORT_RANGE:
         if not msg.text:
             return
-        # Expect "Apr 2026 Apr 2026" or single month
         tokens = msg.text.split()
         start_month = end_month = None
         for split in range(1, len(tokens)):
@@ -248,14 +245,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await _do_export(update, context, start_month, end_month)
         return
 
-    # ── Default: process as new expense ─────────────────────────────────────
     if flow is not None and flow != FLOW_INPUT:
         await msg.reply_text(
             "⚠️ Kamu sedang dalam alur lain. Selesaikan dulu atau ketik /start untuk membatalkan."
         )
         return
 
-    # Handle different message types
     if msg.photo:
         photo = msg.photo[-1]
         f = await photo.get_file()
@@ -265,7 +260,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif msg.document and msg.document.mime_type == "application/pdf":
         f = await msg.document.get_file()
         pdf_bytes = bytes(await f.download_as_bytearray())
-        # Extract text from PDF using pymupdf
         try:
             import fitz
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")

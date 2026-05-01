@@ -37,10 +37,14 @@ CATEGORY_EMOJI = {
 }
 
 EXPENSES_HEADERS = [
-    "date", "description", "amount", "currency",
+    "chat_id", "date", "description", "amount", "currency",
     "category", "payment_method", "input_type", "created_at",
 ]
 
 BUDGET_HEADERS = [
-    "month", "currency", "budget_type", "category", "amount", "notes",
+    "chat_id", "month", "currency", "budget_type", "category", "amount", "notes",
+]
+
+USERS_HEADERS = [
+    "chat_id", "username", "display_name", "default_currency", "joined_at", "is_active",
 ]

@@ -1,16 +1,17 @@
 import asyncio
 import json
-import os
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
 _PROJECT_DIR = Path(__file__).parent.parent
+_log = logging.getLogger(__name__)
 
 import gspread
 from google.oauth2.service_account import Credentials
 
 from config import config
-from utils.constants import EXPENSES_HEADERS, BUDGET_HEADERS
+from utils.constants import EXPENSES_HEADERS, BUDGET_HEADERS, USERS_HEADERS
 
 _SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -23,7 +24,6 @@ def _build_creds() -> Credentials:
     if sa.startswith("{"):
         info = json.loads(sa)
         return Credentials.from_service_account_info(info, scopes=_SCOPES)
-    # Resolve relative path from project root
     path = Path(sa)
     if not path.is_absolute():
         path = _PROJECT_DIR / path
@@ -33,22 +33,27 @@ def _build_creds() -> Credentials:
 def _get_worksheet(sheet_name: str) -> gspread.Worksheet:
     creds = _build_creds()
     client = gspread.authorize(creds)
-    ss = client.open_by_key(config.google_sheets_id)
+    ss = client.open_by_key(config.active_sheets_id)
     try:
         ws = ss.worksheet(sheet_name)
     except gspread.WorksheetNotFound:
         ws = ss.add_worksheet(title=sheet_name, rows=2000, cols=20)
-        headers = EXPENSES_HEADERS if sheet_name == "Expenses" else BUDGET_HEADERS
-        ws.append_row(headers)
+        if sheet_name == "Expenses":
+            ws.append_row(EXPENSES_HEADERS)
+        elif sheet_name == "Budget":
+            ws.append_row(BUDGET_HEADERS)
+        elif sheet_name == "Users":
+            ws.append_row(USERS_HEADERS)
     return ws
 
 
-# ── Sync helpers (run via asyncio.to_thread) ────────────────────────────────
+# ── Sync helpers ─────────────────────────────────────────────────────────────
 
-def _sync_append_expense(expense: dict) -> int:
+def _sync_append_expense(chat_id: int, expense: dict) -> int:
     ws = _get_worksheet("Expenses")
     expense["created_at"] = datetime.now(timezone.utc).isoformat()
     row = [
+        str(chat_id),
         expense.get("date", ""),
         expense.get("description", ""),
         expense.get("amount", 0),
@@ -58,28 +63,38 @@ def _sync_append_expense(expense: dict) -> int:
         expense.get("input_type", "text"),
         expense.get("created_at", ""),
     ]
-    ws.append_row(row)
-    return len(ws.get_all_values())
+    _log.info("Appending to Sheets [chat_id=%s date=%s amount=%s %s]",
+              chat_id, expense.get("date"), expense.get("amount"), expense.get("currency"))
+    ws.append_row(row, value_input_option="RAW")
+    total = len(ws.get_all_values())
+    _log.info("Sheets write OK — worksheet now has %d rows (incl. header)", total)
+    return total
 
 
-def _sync_get_expenses_for_month(month: str) -> list[dict]:
+def _sync_get_expenses_for_month(chat_id: int, month: str) -> list[dict]:
     ws = _get_worksheet("Expenses")
-    return [r for r in ws.get_all_records() if str(r.get("date", "")).startswith(month)]
+    return [
+        r for r in ws.get_all_records()
+        if str(r.get("chat_id", "")) == str(chat_id)
+        and str(r.get("date", "")).startswith(month)
+    ]
 
 
-def _sync_get_recent_expenses(n: int) -> list[dict]:
+def _sync_get_recent_expenses(chat_id: int, n: int) -> list[dict]:
     ws = _get_worksheet("Expenses")
     all_rows = ws.get_all_records()
     result = []
     for i, row in enumerate(all_rows, start=2):
-        row["_row"] = i
-        result.append(row)
+        if str(row.get("chat_id", "")) == str(chat_id):
+            row["_row"] = i
+            result.append(row)
     return result[-n:]
 
 
 def _sync_update_expense(row_number: int, expense: dict) -> None:
     ws = _get_worksheet("Expenses")
     row = [
+        str(expense.get("chat_id", "")),
         expense.get("date", ""),
         expense.get("description", ""),
         expense.get("amount", 0),
@@ -89,27 +104,34 @@ def _sync_update_expense(row_number: int, expense: dict) -> None:
         expense.get("input_type", "text"),
         expense.get("created_at", ""),
     ]
-    ws.update(f"A{row_number}:H{row_number}", [row])
+    ws.update(f"A{row_number}:I{row_number}", [row])
 
 
 def _sync_delete_expense(row_number: int) -> None:
     _get_worksheet("Expenses").delete_rows(row_number)
 
 
-def _sync_get_budget(month: str) -> list[dict]:
+def _sync_get_budget(chat_id: int, month: str) -> list[dict]:
     ws = _get_worksheet("Budget")
-    return [r for r in ws.get_all_records() if str(r.get("month", "")) == month]
+    return [
+        r for r in ws.get_all_records()
+        if str(r.get("chat_id", "")) == str(chat_id)
+        and str(r.get("month", "")) == month
+    ]
 
 
-def _sync_set_budget(month: str, entries: list[dict]) -> None:
+def _sync_set_budget(chat_id: int, month: str, entries: list[dict]) -> None:
     ws = _get_worksheet("Budget")
     all_vals = ws.get_all_values()
-    # Find rows to delete (bottom-up to avoid index shift)
-    to_delete = [i + 2 for i, row in enumerate(all_vals[1:]) if row and row[0] == month]
+    to_delete = [
+        i + 2 for i, row in enumerate(all_vals[1:])
+        if row and str(row[0]) == str(chat_id) and len(row) > 1 and row[1] == month
+    ]
     for rn in reversed(to_delete):
         ws.delete_rows(rn)
     for entry in entries:
         ws.append_row([
+            str(chat_id),
             month,
             entry.get("currency", "IDR"),
             entry.get("budget_type", "total"),
@@ -119,15 +141,91 @@ def _sync_set_budget(month: str, entries: list[dict]) -> None:
         ])
 
 
-def _sync_delete_budget(month: str) -> None:
+def _sync_delete_budget(chat_id: int, month: str) -> None:
     ws = _get_worksheet("Budget")
     all_vals = ws.get_all_values()
-    to_delete = [i + 2 for i, row in enumerate(all_vals[1:]) if row and row[0] == month]
+    to_delete = [
+        i + 2 for i, row in enumerate(all_vals[1:])
+        if row and str(row[0]) == str(chat_id) and len(row) > 1 and row[1] == month
+    ]
     for rn in reversed(to_delete):
         ws.delete_rows(rn)
 
 
-def _sync_get_expenses_range(start_month: str, end_month: str) -> list[dict]:
+def _sync_get_expenses_range(chat_id: int, start_month: str, end_month: str) -> list[dict]:
+    ws = _get_worksheet("Expenses")
+    return [
+        r for r in ws.get_all_records()
+        if str(r.get("chat_id", "")) == str(chat_id)
+        and start_month <= str(r.get("date", ""))[:7] <= end_month
+    ]
+
+
+# ── Users sheet ───────────────────────────────────────────────────────────────
+
+def _sync_get_user(chat_id: int) -> dict | None:
+    ws = _get_worksheet("Users")
+    for row in ws.get_all_records():
+        if str(row.get("chat_id", "")) == str(chat_id):
+            return row
+    return None
+
+
+def _sync_upsert_user(chat_id: int, username: str, display_name: str,
+                       default_currency: str, is_active: bool = True) -> None:
+    ws = _get_worksheet("Users")
+    all_vals = ws.get_all_values()
+    for i, row in enumerate(all_vals[1:], start=2):
+        if row and str(row[0]) == str(chat_id):
+            ws.update(f"A{i}:F{i}", [[
+                str(chat_id), username, display_name,
+                default_currency, row[4], str(is_active),
+            ]])
+            return
+    # New user
+    ws.append_row([
+        str(chat_id),
+        username,
+        display_name,
+        default_currency,
+        datetime.now(timezone.utc).isoformat(),
+        str(is_active),
+    ])
+
+
+def _sync_set_user_currency(chat_id: int, currency: str) -> None:
+    ws = _get_worksheet("Users")
+    all_vals = ws.get_all_values()
+    for i, row in enumerate(all_vals[1:], start=2):
+        if row and str(row[0]) == str(chat_id):
+            ws.update_cell(i, 4, currency)
+            return
+
+
+def _sync_set_user_password(chat_id: int, password_hash: str) -> bool:
+    ws = _get_worksheet("Users")
+    all_vals = ws.get_all_values()
+    for i, row in enumerate(all_vals[1:], start=2):
+        if row and str(row[0]) == str(chat_id):
+            ws.update_cell(i, 7, password_hash)
+            return True
+    return False
+
+
+def _sync_get_all_expenses_for_month(month: str) -> list[dict]:
+    """Superuser: all users, one month."""
+    ws = _get_worksheet("Expenses")
+    return [r for r in ws.get_all_records() if str(r.get("date", "")).startswith(month)]
+
+
+def _sync_get_all_users() -> list[dict]:
+    """Superuser: list all registered users."""
+    ws = _get_worksheet("Users")
+    return ws.get_all_records()
+
+
+def _sync_get_expenses_range_all_users(start_month: str, end_month: str) -> list[dict]:
+    """Superuser: all users, date range — used by dashboard admin page."""
     ws = _get_worksheet("Expenses")
     return [
         r for r in ws.get_all_records()
@@ -135,18 +233,18 @@ def _sync_get_expenses_range(start_month: str, end_month: str) -> list[dict]:
     ]
 
 
-# ── Async public API ─────────────────────────────────────────────────────────
+# ── Async public API ──────────────────────────────────────────────────────────
 
-async def append_expense(expense: dict) -> int:
-    return await asyncio.to_thread(_sync_append_expense, expense)
-
-
-async def get_expenses_for_month(month: str) -> list[dict]:
-    return await asyncio.to_thread(_sync_get_expenses_for_month, month)
+async def append_expense(chat_id: int, expense: dict) -> int:
+    return await asyncio.to_thread(_sync_append_expense, chat_id, expense)
 
 
-async def get_recent_expenses(n: int = 10) -> list[dict]:
-    return await asyncio.to_thread(_sync_get_recent_expenses, n)
+async def get_expenses_for_month(chat_id: int, month: str) -> list[dict]:
+    return await asyncio.to_thread(_sync_get_expenses_for_month, chat_id, month)
+
+
+async def get_recent_expenses(chat_id: int, n: int = 10) -> list[dict]:
+    return await asyncio.to_thread(_sync_get_recent_expenses, chat_id, n)
 
 
 async def update_expense(row_number: int, expense: dict) -> None:
@@ -157,17 +255,47 @@ async def delete_expense(row_number: int) -> None:
     await asyncio.to_thread(_sync_delete_expense, row_number)
 
 
-async def get_budget(month: str) -> list[dict]:
-    return await asyncio.to_thread(_sync_get_budget, month)
+async def get_budget(chat_id: int, month: str) -> list[dict]:
+    return await asyncio.to_thread(_sync_get_budget, chat_id, month)
 
 
-async def set_budget(month: str, entries: list[dict]) -> None:
-    await asyncio.to_thread(_sync_set_budget, month, entries)
+async def set_budget(chat_id: int, month: str, entries: list[dict]) -> None:
+    await asyncio.to_thread(_sync_set_budget, chat_id, month, entries)
 
 
-async def delete_budget(month: str) -> None:
-    await asyncio.to_thread(_sync_delete_budget, month)
+async def delete_budget(chat_id: int, month: str) -> None:
+    await asyncio.to_thread(_sync_delete_budget, chat_id, month)
 
 
-async def get_expenses_range(start_month: str, end_month: str) -> list[dict]:
-    return await asyncio.to_thread(_sync_get_expenses_range, start_month, end_month)
+async def get_expenses_range(chat_id: int, start_month: str, end_month: str) -> list[dict]:
+    return await asyncio.to_thread(_sync_get_expenses_range, chat_id, start_month, end_month)
+
+
+async def get_user(chat_id: int) -> dict | None:
+    return await asyncio.to_thread(_sync_get_user, chat_id)
+
+
+async def upsert_user(chat_id: int, username: str, display_name: str,
+                      default_currency: str, is_active: bool = True) -> None:
+    await asyncio.to_thread(_sync_upsert_user, chat_id, username, display_name,
+                             default_currency, is_active)
+
+
+async def set_user_currency(chat_id: int, currency: str) -> None:
+    await asyncio.to_thread(_sync_set_user_currency, chat_id, currency)
+
+
+async def set_user_password(chat_id: int, password_hash: str) -> bool:
+    return await asyncio.to_thread(_sync_set_user_password, chat_id, password_hash)
+
+
+async def get_all_expenses_for_month(month: str) -> list[dict]:
+    return await asyncio.to_thread(_sync_get_all_expenses_for_month, month)
+
+
+async def get_all_users() -> list[dict]:
+    return await asyncio.to_thread(_sync_get_all_users)
+
+
+async def get_expenses_range_all_users(start_month: str, end_month: str) -> list[dict]:
+    return await asyncio.to_thread(_sync_get_expenses_range_all_users, start_month, end_month)

@@ -3,7 +3,7 @@ from datetime import date
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from agents import sheets_agent, export_agent
+from agents import sheets_agent, export_agent, user_agent, query_agent
 from utils.date_parser import parse_report_month, format_month_display, month_to_str
 from utils.formatter import format_expense_row
 from utils.state import (
@@ -15,20 +15,20 @@ from utils.constants import SUPPORTED_CURRENCIES, CATEGORIES
 from config import config
 
 HELP_TEXT = (
-    "📖 *Panduan agen\\_exptrackerviz*\n\n"
+    "📖 *Panduan FinTrack Bot*\n\n"
     "*Input expense:*\n"
-    "Langsung kirim teks, foto struk, PDF, atau voice note — bot akan memproses otomatis\\.\n"
-    "Atau gunakan /input untuk memulai dengan menu\\.\n\n"
+    "Langsung kirim teks, foto struk, PDF, atau voice note.\n\n"
     "*Commands:*\n"
-    "/laporan \\[bulan\\] — laporan budget & pengeluaran\n"
-    "/budget \\[bulan\\] — set atau update budget\n"
-    "/history \\[n\\] — n transaksi terakhir \\(default 10\\)\n"
-    "/edit — edit transaksi yang dicatat\n"
+    "/laporan [bulan] — laporan budget & pengeluaran\n"
+    "/budget [bulan] — set atau update budget\n"
+    "/tanya [pertanyaan] — tanya data transaksi kamu ke AI\n"
+    "/history [n] — n transaksi terakhir (default 10)\n"
+    "/edit — edit transaksi\n"
     "/hapus — hapus transaksi\n"
-    "/export \\[mulai\\] \\[akhir\\] — export CSV\n"
+    "/export [mulai] [akhir] — export CSV\n"
     "/setcurrency — ubah mata uang default\n"
-    "/help — tampilkan panduan ini\n\n"
-    f"_Mata uang default saat ini: *{config.default_currency}*_"
+    "/setpassword [password] — set password untuk login dashboard\n"
+    "/help — tampilkan panduan ini"
 )
 
 
@@ -59,18 +59,38 @@ def _month_picker_keyboard(prefix: str) -> InlineKeyboardMarkup:
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     clear_state(context.user_data)
+    user = update.effective_user
+    chat_id = user.id
+    display_name = user.first_name or str(chat_id)
+    username = user.username or ""
+
+    try:
+        is_new = not await user_agent.is_registered(chat_id)
+        profile = await user_agent.get_or_register(chat_id, username, display_name)
+        currency = str(profile.get("default_currency", config.default_currency))
+        currency_flag = {"IDR": "🇮🇩", "GBP": "🇬🇧", "USD": "🇺🇸", "EUR": "🇪🇺"}.get(currency, "💱")
+    except Exception:
+        is_new = False
+        profile = {}
+        currency = config.default_currency
+        currency_flag = "💱"
+
+    greeting = f"Halo lagi, *{display_name}*!" if not is_new else f"Halo, *{display_name}*! Kamu sudah terdaftar."
+
     await update.message.reply_text(
-        "👋 Halo\\! Saya *agen\\_exptrackerviz*, asisten keuangan pribadi kamu\\.\n\n"
-        "Langsung kirim *teks, foto struk, PDF,* atau *voice note* untuk mencatat pengeluaran\\.\n\n"
-        "Ketik /help untuk melihat semua perintah yang tersedia\\.",
-        parse_mode="MarkdownV2",
+        f"👋 {greeting}\n\n"
+        f"Mata uang default kamu: *{currency}* {currency_flag}\n"
+        f"Mau ganti? Gunakan /setcurrency\n\n"
+        "Langsung kirim struk, teks, atau voice note untuk mencatat pengeluaran.\n"
+        "Ketik /help untuk semua perintah.",
+        parse_mode="Markdown",
     )
 
 
 # ── /help ────────────────────────────────────────────────────────────────────
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(HELP_TEXT, parse_mode="MarkdownV2")
+    await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
 
 
 # ── /input ───────────────────────────────────────────────────────────────────
@@ -103,7 +123,6 @@ async def cmd_laporan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 "month": month_str,
                 "month_display": month_display,
             })
-            # Trigger report directly via callback mechanism by passing to input handler
             from handlers.callback_handler import _run_report_for_month
             await _run_report_for_month(update, context, month_str, month_display)
             return
@@ -148,10 +167,33 @@ async def cmd_budget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     )
 
 
+# ── /tanya ───────────────────────────────────────────────────────────────────
+
+async def cmd_tanya(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_user.id
+    question = " ".join(context.args).strip() if context.args else ""
+
+    if not question:
+        await update.message.reply_text(
+            "💬 Tuliskan pertanyaanmu setelah /tanya, contoh:\n\n"
+            "`/tanya bulan lalu paling boros di mana?`\n"
+            "`/tanya rata-rata food 3 bulan terakhir berapa?`\n"
+            "`/tanya budget transport bulan ini masih cukup?`",
+            parse_mode="Markdown",
+        )
+        return
+
+    await update.message.reply_text("🤔 Sedang menganalisis data kamu...")
+
+    answer = await query_agent.answer(chat_id, question)
+    await update.message.reply_text(answer, parse_mode="Markdown")
+
+
 # ── /history ─────────────────────────────────────────────────────────────────
 
 async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     clear_state(context.user_data)
+    chat_id = update.effective_user.id
     n = 10
     if context.args:
         try:
@@ -161,7 +203,7 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     await update.message.reply_text("⏳ Mengambil riwayat transaksi...")
     try:
-        rows = await sheets_agent.get_recent_expenses(n)
+        rows = await sheets_agent.get_recent_expenses(chat_id, n)
     except Exception as e:
         await update.message.reply_text(f"❌ Gagal membaca Google Sheets: {e}")
         return
@@ -181,9 +223,10 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def cmd_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     clear_state(context.user_data)
+    chat_id = update.effective_user.id
     await update.message.reply_text("⏳ Mengambil transaksi terakhir...")
     try:
-        rows = await sheets_agent.get_recent_expenses(10)
+        rows = await sheets_agent.get_recent_expenses(chat_id, 10)
     except Exception as e:
         await update.message.reply_text(f"❌ Gagal membaca Google Sheets: {e}")
         return
@@ -212,9 +255,10 @@ async def cmd_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_hapus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     clear_state(context.user_data)
+    chat_id = update.effective_user.id
     await update.message.reply_text("⏳ Mengambil transaksi terakhir...")
     try:
-        rows = await sheets_agent.get_recent_expenses(10)
+        rows = await sheets_agent.get_recent_expenses(chat_id, 10)
     except Exception as e:
         await update.message.reply_text(f"❌ Gagal membaca Google Sheets: {e}")
         return
@@ -244,12 +288,9 @@ async def cmd_hapus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     clear_state(context.user_data)
     today = date.today()
-    # Parse optional args: /export Apr 2026 Apr 2026  or /export 2026-04 2026-04
     args_text = " ".join(context.args) if context.args else ""
     if args_text:
-        # Try to find two month references separated by space
         tokens = args_text.split()
-        # Simple heuristic: try pairs
         start_month = end_month = None
         for split in range(1, len(tokens)):
             p1 = parse_report_month(" ".join(tokens[:split]))
@@ -266,7 +307,6 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             await _do_export(update, context, start_month, end_month)
             return
 
-    # Ask for range
     set_state(context.user_data, FLOW_EXPORT, STEP_ASK_EXPORT_RANGE, {})
     cur_month = month_to_str(today.year, today.month)
     kb = InlineKeyboardMarkup([
@@ -280,27 +320,66 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 async def _do_export(update: Update, context: ContextTypes.DEFAULT_TYPE,
                      start_month: str, end_month: str) -> None:
-    await update.message.reply_text("⏳ Menyiapkan file CSV...")
+    chat_id = update.effective_user.id
+    msg = update.effective_message
+    if update.message:
+        await msg.reply_text("⏳ Menyiapkan file CSV...")
     try:
-        rows = await sheets_agent.get_expenses_range(start_month, end_month)
+        rows = await sheets_agent.get_expenses_range(chat_id, start_month, end_month)
     except Exception as e:
-        await update.message.reply_text(f"❌ Gagal membaca Google Sheets: {e}")
+        await msg.reply_text(f"❌ Gagal membaca Google Sheets: {e}")
         return
 
     label = start_month if start_month == end_month else f"{start_month}_to_{end_month}"
     buf, filename = export_agent.generate_csv(rows, label)
     clear_state(context.user_data)
-    await update.message.reply_document(
+    await msg.reply_document(
         document=buf, filename=filename,
         caption=f"✅ Export selesai — {len(rows)} transaksi ({start_month} s/d {end_month})",
     )
+
+
+# ── /setpassword ─────────────────────────────────────────────────────────────
+
+async def cmd_setpassword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    clear_state(context.user_data)
+    chat_id = update.effective_user.id
+
+    if not context.args:
+        await update.message.reply_text(
+            "🔐 *Set Password Dashboard*\n\n"
+            "Format: `/setpassword passwordkamu`\n"
+            "Minimal 6 karakter.\n\n"
+            "⚠️ Gunakan perintah ini hanya di *chat pribadi* dengan bot, bukan di grup.",
+            parse_mode="Markdown",
+        )
+        return
+
+    password = context.args[0]
+    if len(password) < 6:
+        await update.message.reply_text("⚠️ Password minimal 6 karakter.")
+        return
+
+    if not await user_agent.is_registered(chat_id):
+        await update.message.reply_text("⚠️ Kamu belum terdaftar. Kirim /start terlebih dahulu.")
+        return
+
+    success = await user_agent.set_password(chat_id, password)
+    if success:
+        await update.message.reply_text(
+            "✅ Password dashboard berhasil diset!\n\n"
+            "Login di dashboard menggunakan username Telegram kamu.",
+        )
+    else:
+        await update.message.reply_text("❌ Gagal menyimpan password. Pastikan kamu sudah terdaftar (/start).")
 
 
 # ── /setcurrency ─────────────────────────────────────────────────────────────
 
 async def cmd_setcurrency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     clear_state(context.user_data)
-    current = config.default_currency
+    chat_id = update.effective_user.id
+    current = await user_agent.get_user_currency(chat_id)
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton(f"{'✅ ' if c == current else ''}{c}", callback_data=f"currency:set:{c}")
         for c in SUPPORTED_CURRENCIES
