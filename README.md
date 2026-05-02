@@ -106,6 +106,111 @@ Streamlit Dashboard (berjalan terpisah, baca Sheets yang sama)
 
 ---
 
+## User Flow
+
+Diagram lengkap perjalanan user — dari buka Telegram hingga semua fitur utama FinTrack.
+
+```mermaid
+flowchart TD
+    classDef startEnd fill:#1F2937,stroke:#111827,color:#F9FAFB,stroke-width:2px
+    classDef decision fill:#FED7AA,stroke:#C2410C,color:#1C1917,stroke-width:1.5px
+    classDef action fill:#DBEAFE,stroke:#1D4ED8,color:#1E1B4B,stroke-width:1.5px
+    classDef storage fill:#BBF7D0,stroke:#15803D,color:#14532D,stroke-width:1.5px
+    classDef ai fill:#E9D5FF,stroke:#7E22CE,color:#3B0764,stroke-width:1.5px
+    classDef hub fill:#FEF3C7,stroke:#B45309,color:#451A03,stroke-width:2.5px
+
+    Start([👤 User buka Telegram]):::startEnd
+    Start --> S1["Kirim /start ke bot FinTrack"]:::action
+    S1 --> S2{User baru?}:::decision
+    S2 -->|Ya, pertama kali| S3["Auto-registrasi ke sheet Users+ tampilkan info mata uang default"]:::action
+    S3 --> Setup["Setup opsional (one-time):• /setcurrency — ganti mata uang• /setpassword — akses dashboard"]:::action
+    S2 -->|Sudah pernah| Hub
+    Setup --> Hub
+
+    Hub{{🏠 PILIH AKTIVITAS}}:::hub
+
+    Hub --> FlowA
+    Hub --> FlowB
+    Hub --> FlowC
+    Hub --> FlowD
+    Hub --> FlowE
+    Hub --> FlowF
+
+    subgraph SA ["💸 A · CATAT PENGELUARAN"]
+      direction TB
+      FlowA["Kirim /input ataulangsung kirim pesan ke bot"]:::action
+      FlowA --> A1{Jenis input?}:::decision
+      A1 -->|📝 Teks| A2["Ketik bebas, contoh:'makan siang 25rb gopay'"]:::action
+      A1 -->|📸 Foto| A3["Kirim foto struk"]:::action
+      A1 -->|📄 PDF| A4["Upload PDF(invoice/mutasi)"]:::action
+      A1 -->|🎤 Voice| A5["Rekam voice note,contoh: 'kemarin nasi padang 30rb'"]:::action
+      A2 --> AI1
+      A3 --> AI1
+      A4 --> AI1
+      A5 --> AI1
+      AI1["🤖 AI ekstrak & normalisasi:tanggal · nominal · mata uang ·kategori · metode pembayaran"]:::ai
+      AI1 --> A6["Bot tampilkan previewuntuk verifikasi user"]:::action
+      A6 --> A7{Hasil benar?}:::decision
+      A7 -->|✏️ Edit field| A6
+      A7 -->|❌ Batal| AEnd1([Kembali ke menu]):::startEnd
+      A7 -->|✅ Konfirmasi| A8[("💾 Tersimpan keGoogle Sheets")]:::storage
+      A8 --> AEnd2([Selesai]):::startEnd
+    end
+
+    subgraph SB ["📊 B · ATUR BUDGET"]
+      direction TB
+      FlowB["Kirim /budget bulan tahun(default: bulan berjalan)"]:::action
+      FlowB --> B1{Budget bulan itusudah ada?}:::decision
+      B1 -->|Ya| B2["Pilih aksi:✅ Tetap · ✏️ Ganti · 🗑️ Hapus"]:::action
+      B1 -->|Belum| B3["Pilih tipe budget:📦 Total atau 📂 Per Kategori"]:::action
+      B2 --> B4[("💾 Update sheet Budget")]:::storage
+      B3 --> B4
+      B4 --> BEnd([Selesai]):::startEnd
+    end
+
+    subgraph SC ["📈 C · LIHAT LAPORAN"]
+      direction TB
+      FlowC["Kirim /laporan bulan tahun"]:::action
+      FlowC --> C1["Bot tarik data dari Sheets(filter chat_id user)"]:::action
+      C1 --> C2{Ada multi-currency?}:::decision
+      C2 -->|Ya| C3["💱 Konversi livevia frankfurter.app"]:::ai
+      C2 -->|Tidak| C4
+      C3 --> C4["Tampilkan ringkasan teks:total · per kategori ·budget vs aktual"]:::action
+      C4 --> C5{Tambahkanchart?}:::decision
+      C5 -->|📊 Bar / 🥧 Pie| C6["Bot kirim chartsebagai gambar"]:::action
+      C5 -->|Tidak| CEnd([Selesai]):::startEnd
+      C6 --> CEnd
+    end
+
+    subgraph SD ["🤖 D · TANYA AI (NATURAL LANGUAGE)"]
+      direction TB
+      FlowD["Kirim /tanya pertanyaan,contoh: 'berapa total food April?'"]:::action
+      FlowD --> D1["Fetch data 6 bulan terakhirdari Sheets sebagai konteks"]:::action
+      D1 --> D2["🤖 Gemini analisa konteks+ jawab dalam bahasa natural"]:::ai
+      D2 --> DEnd([Selesai]):::startEnd
+    end
+
+    subgraph SE ["🖥️ E · STREAMLIT DASHBOARD"]
+      direction TB
+      FlowE["Buka URL dashboard di browser"]:::action
+      FlowE --> E1["Login: Telegram username +password (set via /setpassword)"]:::action
+      E1 --> E2{Authberhasil?}:::decision
+      E2 -->|❌ Gagal| E1
+      E2 -->|✅ Berhasil| E3["Pilih halaman analitik"]:::action
+      E3 --> E4["• Overview — KPI cards, treemap• Trends — line chart, heatmap• Budget — bullet chart, progress• Transaksi — tabel + export CSV• Analisa AI — Q&A & rekomendasi"]:::action
+      E4 --> EEnd([Selesai]):::startEnd
+    end
+
+    subgraph SF ["🛠️ F · KELOLA DATA"]
+      direction TB
+      FlowF["Pilih utility command"]:::action
+      FlowF --> F1["• /history N — N transaksi terakhir• /edit — edit transaksi• /hapus — hapus transaksi• /export bulan-awal bulan-akhir"]:::action
+      F1 --> FEnd([Selesai]):::startEnd
+    end
+```
+
+---
+
 ## Agent Roster
 
 | Agent | Tugas | Model / Tool |
